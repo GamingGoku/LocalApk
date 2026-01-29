@@ -20,3 +20,4 @@
 
           echo "Patched MainActivity.java:"
           grep -n "setOffscreenPageLimit" "${FILE}" || true
+```0
