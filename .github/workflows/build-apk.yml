@@ -2,7 +2,6 @@ name: Build APK from ZIP
 
 on:
   workflow_dispatch:
-  push:
 
 jobs:
   build:
@@ -21,52 +20,28 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          accept-android-sdk-licenses: false
+          accept-android-sdk-licenses: true
 
-      - name: Accept Android SDK licenses (non-interactive)
+      - name: Accept SDK licenses (non-interactive)
+        shell: bash
         run: |
-          yes | sdkmanager --licenses > /dev/null
-
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses >/dev/null
 
       - name: Unzip project
+        shell: bash
         run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y unzip dos2unix
+          sudo apt-get install -y unzip
+          rm -rf extracted
           unzip -o -q "MealPlanner.zip" -d "extracted"
-          echo "Project root listing:"
-          ls -la "extracted/GithubMealTester"
-
-      - name: Setup Gradle 8.2.1
-        uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: "8.2.1"
-
-      - name: Generate Gradle Wrapper (missing in ZIP)
-        working-directory: extracted/GithubMealTester
-        run: |
-          gradle wrapper --gradle-version 8.2.1
-          dos2unix "./gradlew" || true
-          chmod +x "./gradlew"
-
-      - name: Create placeholder launcher icons (fix missing mipmap)
-        run: |
-          RES_DIR="extracted/GithubMealTester/app/src/main/res"
-          mkdir -p "${RES_DIR}/mipmap-mdpi"
-          ICON_B64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2u0AAAAASUVORK5CYII="
-          echo "${ICON_B64}" | base64 -d > "${RES_DIR}/mipmap-mdpi/ic_launcher.png"
-          echo "${ICON_B64}" | base64 -d > "${RES_DIR}/mipmap-mdpi/ic_launcher_round.png"
-          ls -la "${RES_DIR}/mipmap-mdpi"
-
-      - name: Patch removed WebView API (setAppCacheEnabled)
-        run: |
-          FILE="extracted/GithubMealTester/app/src/main/java/com/example/githubmealtester/WebViewFragment.java"
-          sed -i '/setAppCacheEnabled\s*(/d' "${FILE}"
-          grep -n "setAppCacheEnabled" "${FILE}" || true
+          echo "Extracted top level:"
+          ls -la extracted
+          echo "Project tree:"
+          find extracted -maxdepth 3 -type f -o -type d | sed -n '1,200p'
 
       - name: Patch MainActivity to keep tabs alive (offscreen limit)
+        shell: bash
         run: |
           set -e
           FILE="extracted/GithubMealTester/app/src/main/java/com/example/githubmealtester/MainActivity.java"
@@ -78,68 +53,21 @@ jobs:
 
           if grep -q "setOffscreenPageLimit" "${FILE}"; then
             echo "OffscreenPageLimit already set. No changes needed."
-          else
-            sed -i 's/\(viewPager\.setAdapter([^;]*;\)/\1\n        viewPager.setOffscreenPageLimit(4);/' "${FILE}"
+            exit 0
           fi
 
-          echo "MainActivity offscreen line:"
+          sed -i 's/\(viewPager\.setAdapter([^;]*;\)/\1\n        viewPager.setOffscreenPageLimit(4);/' "${FILE}"
+
+          echo "Patched line(s):"
           grep -n "setOffscreenPageLimit" "${FILE}" || true
 
-      - name: Patch WebViewFragment to hide web header/nav (CSS injection)
-        run: |
-          python3 - << 'PY'
-          import re
-          from pathlib import Path
-
-          path = Path("extracted/GithubMealTester/app/src/main/java/com/example/githubmealtester/WebViewFragment.java")
-          if not path.exists():
-              raise SystemExit(f"ERROR: {path} not found")
-
-          s = path.read_text(encoding="utf-8")
-
-          # Skip if already patched
-          if "injectChromeHider(" in s:
-              print("Already patched: injectChromeHider exists.")
-              raise SystemExit(0)
-
-          # Insert call inside onPageFinished
-          m = re.search(r'(onPageFinished\s*\(\s*WebView\s+view\s*,\s*String\s+url\s*\)\s*\{)', s)
-          if not m:
-              raise SystemExit("ERROR: onPageFinished(WebView view, String url) not found")
-
-          insert_at = m.end()
-          s = s[:insert_at] + "\n            injectChromeHider(view);\n" + s[insert_at:]
-
-          helper = """
-          private void injectChromeHider(WebView view) {
-              // Hide the site's header/nav so native tabs feel like the real navigation.
-              String css = "header, nav, [role=\\\\\\"navigation\\\\\\"], .navbar, .topbar, .tabs { display:none !important; }"
-                      + "body { padding-top: 0 !important; margin-top: 0 !important; }";
-
-              String js = "(function(){try{"
-                      + "var st=document.getElementById('nativeChromeHide');"
-                      + "if(!st){st=document.createElement('style');st.id='nativeChromeHide';document.head.appendChild(st);}"
-                      + "st.innerHTML=\\\\\\"" + css.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"") + "\\\\\\";"
-                      + "}catch(e){}})();";
-
-              view.evaluateJavascript(js, null);
-          }
-          """.strip()
-
-          # Add helper before final closing brace of class
-          i = s.rfind("}")
-          if i == -1:
-              raise SystemExit("ERROR: class closing brace not found")
-
-          s = s[:i] + "\n\n" + helper + "\n" + s[i:]
-          path.write_text(s, encoding="utf-8")
-          print("Patched WebViewFragment.java with CSS injection.")
-          PY
-
       - name: Build debug APK
+        shell: bash
         working-directory: extracted/GithubMealTester
         run: |
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          set -e
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
