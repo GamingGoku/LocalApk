@@ -12,12 +12,40 @@ jobs:
       - name: "Checkout"
         uses: "actions/checkout@v4"
 
-      - name: "List repo files (debug)"
+      - name: "Show ZIP file info"
         run: |
-          echo "Repo root:"
           ls -la
-          echo "Look for MealPlanner.zip:"
-          ls -la "MealPlanner.zip" || true
+          echo "MealPlanner.zip size:"
+          ls -lh "MealPlanner.zip"
+
+      - name: "List ZIP contents"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip
+          echo "ZIP file listing:"
+          unzip -l "MealPlanner.zip" | sed -n '1,200p'
+          echo "..."
+          unzip -l "MealPlanner.zip" | tail -n 50
+
+      - name: "Unzip project"
+        run: |
+          unzip -o -q "MealPlanner.zip" -d "extracted"
+          echo "Extracted top level:"
+          ls -la "extracted"
+          echo "Extracted tree (first 200 lines):"
+          find "extracted" -maxdepth 5 -print | sed -n '1,200p'
+
+      - name: "Locate gradlew (must exist)"
+        run: |
+          echo "Searching for gradlew..."
+          FOUND="$(find "extracted" -maxdepth 20 -type f -name "gradlew" -print -quit || true)"
+          echo "Found: ${FOUND}"
+          if [ -z "${FOUND}" ]; then
+            echo "ERROR: No gradlew file found anywhere under extracted/"
+            echo "This ZIP does not contain a buildable Android project."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "${FOUND}")" >> "$GITHUB_ENV"
 
       - name: "Set up JDK 17"
         uses: "actions/setup-java@v4"
@@ -36,32 +64,18 @@ jobs:
 
       - name: "Install Android SDK packages (safe defaults)"
         run: |
-          sdkmanager --version
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: "Unzip project"
+      - name: "Build debug APK"
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip dos2unix
-          unzip -q "MealPlanner.zip" -d "extracted"
-          echo "Extracted top level:"
-          ls -la "extracted"
-          echo "Find gradlew:"
-          find "extracted" -maxdepth 8 -name "gradlew" -print
-
-      - name: "Build debug APK (auto-detect project dir)"
-        run: |
-          PROJECT_DIR="$(dirname "$(find "extracted" -maxdepth 8 -name "gradlew" -print -quit)")"
-          echo "Project dir: ${PROJECT_DIR}"
-          if [ -z "${PROJECT_DIR}" ]; then
-            echo "ERROR: gradlew not found under extracted/. Check the zip contents."
-            exit 1
-          fi
-
+          sudo apt-get install -y dos2unix
+          echo "Using PROJECT_DIR=${PROJECT_DIR}"
           cd "${PROJECT_DIR}"
+          ls -la
           dos2unix "./gradlew" || true
           chmod +x "./gradlew"
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: "Upload APK artifact"
         uses: "actions/upload-artifact@v4"
